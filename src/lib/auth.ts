@@ -38,7 +38,8 @@ export function handleError(err: unknown): NextResponse {
     return NextResponse.json({ error: "Validation error", details: (err as any).errors }, { status: 400 });
   }
   console.error("Unhandled error:", err);
-  return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  const message = err instanceof Error ? err.message : "Internal server error";
+  return NextResponse.json({ error: message }, { status: 500 });
 }
 
 export function signToken(payload: AuthPayload): string {
