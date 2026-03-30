@@ -1,0 +1,222 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   String    @id @default(uuid())
+  email                String    @unique
+  passwordHash         String    @map("password_hash")
+  name                 String?
+  emailVerified        Boolean   @default(false) @map("email_verified")
+  emailVerifyToken     String?   @unique @map("email_verify_token")
+  passwordResetToken   String?   @unique @map("password_reset_token")
+  passwordResetExpires DateTime? @map("password_reset_expires")
+  lastCheckIn          DateTime? @map("last_check_in")
+  checkInIntervalDays  Int?      @map("check_in_interval_days")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  vaultItems         VaultItem[]
+  folders            Folder[]
+  tags               Tag[]
+  trusteesGranted    Trustee[]       @relation("TrusteeGrantor")
+  trusteesReceived   Trustee[]       @relation("TrusteeRecipient")
+  accessTriggers     AccessTrigger[]
+  auditLogs          AuditLog[]      @relation("AuditLogOwner")
+  auditLogsActed     AuditLog[]      @relation("AuditLogActor")
+
+  @@map("users")
+}
+
+enum VaultItemType {
+  PASSWORD
+  DOCUMENT
+  NOTE
+  DIGITAL_ASSET
+  OTHER
+}
+
+model VaultItem {
+  id             String        @id @default(uuid())
+  userId         String        @map("user_id")
+  type           VaultItemType
+  title          String
+  encryptedData  String        @map("encrypted_data")
+  metadata       Json?
+  isFavorite     Boolean       @default(false) @map("is_favorite")
+  folderId       String?       @map("folder_id")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  user               User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder             Folder?                @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  tags               VaultItemTag[]
+  trusteePermissions TrusteeItemPermission[]
+
+  @@index([userId])
+  @@index([userId, type])
+  @@index([userId, folderId])
+  @@map("vault_items")
+}
+
+model Folder {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  name      String
+  parentId  String?  @map("parent_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent     Folder?     @relation("FolderHierarchy", fields: [parentId], references: [id])
+  children   Folder[]    @relation("FolderHierarchy")
+  vaultItems VaultItem[]
+
+  @@index([userId])
+  @@map("folders")
+}
+
+model Tag {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  name      String
+  color     String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items VaultItemTag[]
+
+  @@unique([userId, name])
+  @@map("tags")
+}
+
+model VaultItemTag {
+  vaultItemId String @map("vault_item_id")
+  tagId       String @map("tag_id")
+
+  vaultItem VaultItem @relation(fields: [vaultItemId], references: [id], onDelete: Cascade)
+  tag       Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([vaultItemId, tagId])
+  @@map("vault_item_tags")
+}
+
+enum TrusteeRole {
+  TRUSTEE
+  EXECUTOR
+}
+
+enum TrusteeStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+
+model Trustee {
+  id              String        @id @default(uuid())
+  grantorId       String        @map("grantor_id")
+  trusteeId       String        @map("trustee_id")
+  role            TrusteeRole
+  status          TrusteeStatus @default(PENDING)
+  inviteToken     String?       @unique @map("invite_token")
+  inviteExpiresAt DateTime?     @map("invite_expires_at")
+  accessLevel     Json?         @map("access_level")
+  activatedAt     DateTime?     @map("activated_at")
+  activatedBy     String?       @map("activated_by")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  grantor         User                    @relation("TrusteeGrantor", fields: [grantorId], references: [id], onDelete: Cascade)
+  trustee         User                    @relation("TrusteeRecipient", fields: [trusteeId], references: [id], onDelete: Cascade)
+  itemPermissions TrusteeItemPermission[]
+
+  @@unique([grantorId, trusteeId])
+  @@map("trustees")
+}
+
+model TrusteeItemPermission {
+  id          String    @id @default(uuid())
+  trusteeId   String    @map("trustee_id")
+  vaultItemId String    @map("vault_item_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  trustee   Trustee   @relation(fields: [trusteeId], references: [id], onDelete: Cascade)
+  vaultItem VaultItem @relation(fields: [vaultItemId], references: [id], onDelete: Cascade)
+
+  @@unique([trusteeId, vaultItemId])
+  @@index([trusteeId])
+  @@map("trustee_item_permissions")
+}
+
+enum TriggerType {
+  MANUAL
+  DEAD_MAN_SWITCH
+  INACTIVITY
+}
+
+enum TriggerStatus {
+  ARMED
+  TRIGGERED
+  EXECUTED
+  CANCELLED
+  OVERRIDDEN
+}
+
+model AccessTrigger {
+  id            String        @id @default(uuid())
+  userId        String        @map("user_id")
+  type          TriggerType
+  status        TriggerStatus @default(ARMED)
+  delayDays     Int           @default(0) @map("delay_days")
+  triggeredAt   DateTime?     @map("triggered_at")
+  executesAt    DateTime?     @map("executes_at")
+  executedAt    DateTime?     @map("executed_at")
+  cancelledAt   DateTime?     @map("cancelled_at")
+  inactivityDays Int?         @map("inactivity_days")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("access_triggers")
+}
+
+enum AuditAction {
+  TRUSTEE_INVITED
+  TRUSTEE_ACCEPTED
+  TRUSTEE_REVOKED
+  TRIGGER_ARMED
+  TRIGGER_FIRED
+  TRIGGER_EXECUTED
+  TRIGGER_CANCELLED
+  TRIGGER_OVERRIDDEN
+  TRUSTEE_ACCESS_ACTIVATED
+  TRUSTEE_VIEWED_ITEM
+  OWNER_CHECK_IN
+  DEAD_MAN_SWITCH_WARNING
+}
+
+model AuditLog {
+  id        String      @id @default(uuid())
+  ownerId   String      @map("owner_id")
+  actorId   String      @map("actor_id")
+  action    AuditAction
+  details   Json?
+  ipAddress String?     @map("ip_address")
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  owner User @relation("AuditLogOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  actor User @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+  @@index([actorId])
+  @@index([ownerId, action])
+  @@map("audit_logs")
+}
