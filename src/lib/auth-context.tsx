@@ -15,7 +15,7 @@ interface AuthContextValue {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name?: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -25,35 +25,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      setLoading(false);
-      return;
-    }
+    // Session check via HttpOnly cookie - no localStorage needed
     authApi
       .me()
       .then((res) => setUser(res.user))
-      .catch(() => localStorage.removeItem("token"))
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
     const res = await authApi.login(email, password);
-    localStorage.setItem("token", res.token);
     setUser(res.user);
   }, []);
 
   const register = useCallback(
     async (email: string, password: string, name?: string) => {
       const res = await authApi.register(email, password, name);
-      localStorage.setItem("token", res.token);
       setUser(res.user);
     },
     [],
   );
 
-  const logout = useCallback(() => {
-    localStorage.removeItem("token");
+  const logout = useCallback(async () => {
+    await authApi.logout().catch(() => {});
     setUser(null);
   }, []);
 

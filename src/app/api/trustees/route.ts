@@ -3,7 +3,8 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { requireAuth, handleError } from "@/lib/auth";
+import { requireAuth, handleError, getClientIp } from "@/lib/auth";
+import { sendTrusteeInviteEmail } from "@/lib/email";
 
 /* ------------------------------------------------------------------ */
 /*  Shared helpers                                                     */
@@ -176,6 +177,7 @@ export async function POST(request: NextRequest) {
             trusteeEmail: body.trusteeEmail,
             role: body.role,
           },
+          ipAddress: getClientIp(request),
         },
       });
 
@@ -185,6 +187,10 @@ export async function POST(request: NextRequest) {
         include: trusteeIncludes,
       });
     });
+
+    // Send invite email
+    const grantorName = grantor.name || grantor.email;
+    await sendTrusteeInviteEmail(body.trusteeEmail, grantorName, body.role, inviteToken);
 
     return NextResponse.json(
       { trustee: formatTrustee(trustee) },

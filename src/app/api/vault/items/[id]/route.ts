@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, handleError } from "@/lib/auth";
-import { encrypt, decrypt } from "@/lib/crypto";
+import { encrypt, decrypt, unwrapDekFromServerKek } from "@/lib/crypto";
 
 /* ------------------------------------------------------------------ */
 /*  Shared helpers                                                     */
@@ -33,7 +33,7 @@ type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
   try {
-    const { userId } = requireAuth(request);
+    const { userId, edek } = requireAuth(request);
     const { id } = await params;
 
     const item = await prisma.vaultItem.findFirst({
@@ -48,7 +48,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
       return NextResponse.json({ error: "Item not found" }, { status: 404 });
     }
 
-    const decryptedData = JSON.parse(decrypt(item.encryptedData));
+    const dek = edek ? unwrapDekFromServerKek(edek) : undefined;
+    const decryptedData = JSON.parse(decrypt(item.encryptedData, dek));
 
     return NextResponse.json({ item: formatItem(item, decryptedData) });
   } catch (error) {
@@ -74,7 +75,7 @@ const updateItemSchema = z.object({
 
 export async function PATCH(request: NextRequest, { params }: RouteContext) {
   try {
-    const { userId } = requireAuth(request);
+    const { userId, edek } = requireAuth(request);
     const { id } = await params;
     const body = updateItemSchema.parse(await request.json());
 
@@ -125,7 +126,8 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     if (body.isFavorite !== undefined) updateData.isFavorite = body.isFavorite;
 
     if (body.data !== undefined) {
-      updateData.encryptedData = encrypt(JSON.stringify(body.data));
+      const dek = edek ? unwrapDekFromServerKek(edek) : undefined;
+      updateData.encryptedData = encrypt(JSON.stringify(body.data), dek);
     }
 
     // Handle folder connect / disconnect

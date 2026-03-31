@@ -1,19 +1,30 @@
 "use client";
 
-import { useState, FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, FormEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { ApiError } from "@/lib/api";
 
 export default function RegisterPage() {
+  return (
+    <Suspense>
+      <RegisterContent />
+    </Suspense>
+  );
+}
+
+function RegisterContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { register } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const returnTo = searchParams.get("returnTo") || "/vault";
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -25,7 +36,7 @@ export default function RegisterPage() {
     setLoading(true);
     try {
       await register(email, password, name || undefined);
-      router.push("/vault");
+      router.push(returnTo);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Registration failed");
     } finally {
@@ -78,7 +89,7 @@ export default function RegisterPage() {
           </button>
         </form>
         <div className="auth-footer">
-          Already have an account? <Link href="/login">Sign in</Link>
+          Already have an account? <Link href={returnTo !== "/vault" ? `/login?returnTo=${encodeURIComponent(returnTo)}` : "/login"}>Sign in</Link>
         </div>
       </div>
     </div>

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, handleError } from "@/lib/auth";
-import { encrypt } from "@/lib/crypto";
+import { encrypt, unwrapDekFromServerKek } from "@/lib/crypto";
 
 /* ------------------------------------------------------------------ */
 /*  Shared helpers                                                     */
@@ -40,7 +40,7 @@ const createItemSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const { userId } = requireAuth(request);
+    const { userId, edek } = requireAuth(request);
     const body = createItemSchema.parse(await request.json());
 
     // Validate folder belongs to user
@@ -69,7 +69,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const encryptedData = encrypt(JSON.stringify(body.data));
+    const dek = edek ? unwrapDekFromServerKek(edek) : undefined;
+    const encryptedData = encrypt(JSON.stringify(body.data), dek);
 
     const item = await prisma.vaultItem.create({
       data: {

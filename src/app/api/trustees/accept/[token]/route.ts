@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireAuth, handleError } from "@/lib/auth";
+import { requireAuth, handleError, getClientIp } from "@/lib/auth";
 
 /* ------------------------------------------------------------------ */
 /*  POST /api/trustees/accept/[token]                                  */
@@ -66,7 +66,9 @@ export async function POST(
           action: "TRUSTEE_ACCEPTED",
           details: {
             trusteeRecordId: trustee.id,
+            role: trustee.role,
           },
+          ipAddress: getClientIp(request),
         },
       });
     });

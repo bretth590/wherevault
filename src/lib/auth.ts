@@ -1,16 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
+import { prisma } from "@/lib/prisma";
 
 export interface AuthPayload {
   userId: string;
   email: string;
+  edek?: string;
 }
 
-export function getAuth(request: NextRequest): AuthPayload | null {
-  const header = request.headers.get("authorization");
-  if (!header?.startsWith("Bearer ")) return null;
+const isProduction = process.env.NODE_ENV === "production";
+const REFRESH_TOKEN_DAYS = parseInt(process.env.REFRESH_TOKEN_EXPIRES_DAYS || "30", 10);
 
-  const token = header.slice(7);
+export function getAuth(request: NextRequest): AuthPayload | null {
+  // 1. Try HttpOnly cookie first
+  let token = request.cookies.get("access_token")?.value;
+
+  // 2. Fall back to Authorization header
+  if (!token) {
+    const header = request.headers.get("authorization");
+    if (header?.startsWith("Bearer ")) {
+      token = header.slice(7);
+    }
+  }
+
+  if (!token) return null;
+
   try {
     return jwt.verify(token, process.env.JWT_SECRET!) as AuthPayload;
   } catch {
@@ -44,6 +59,102 @@ export function handleError(err: unknown): NextResponse {
 
 export function signToken(payload: AuthPayload): string {
   return jwt.sign(payload, process.env.JWT_SECRET!, {
-    expiresIn: (process.env.JWT_EXPIRES_IN || "7d") as string & jwt.SignOptions["expiresIn"],
+    expiresIn: "15m",
   });
+}
+
+// --- Cookie helpers ---
+
+export function setAuthCookies(
+  response: NextResponse,
+  accessToken: string,
+  refreshToken: string,
+): void {
+  response.cookies.set("access_token", accessToken, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "strict" : "lax",
+    maxAge: 15 * 60, // 15 minutes
+    path: "/",
+  });
+
+  response.cookies.set("refresh_token", refreshToken, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "strict" : "lax",
+    maxAge: REFRESH_TOKEN_DAYS * 24 * 60 * 60,
+    path: "/api/auth",
+  });
+}
+
+export function clearAuthCookies(response: NextResponse): void {
+  response.cookies.set("access_token", "", {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "strict" : "lax",
+    maxAge: 0,
+    path: "/",
+  });
+  response.cookies.set("refresh_token", "", {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "strict" : "lax",
+    maxAge: 0,
+    path: "/api/auth",
+  });
+}
+
+// --- Refresh token helpers ---
+
+export function generateRefreshToken(): string {
+  return crypto.randomBytes(48).toString("hex");
+}
+
+export function hashToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+export async function createRefreshTokenRecord(userId: string, rawToken: string): Promise<void> {
+  const tokenHash = hashToken(rawToken);
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000);
+  await prisma.refreshToken.create({
+    data: { userId, tokenHash, expiresAt },
+  });
+}
+
+export async function revokeRefreshToken(rawToken: string): Promise<void> {
+  const tokenHash = hashToken(rawToken);
+  await prisma.refreshToken.updateMany({
+    where: { tokenHash, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+}
+
+// --- IP extraction ---
+
+export function getClientIp(request: NextRequest): string | undefined {
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) return forwarded.split(",")[0].trim();
+  const realIp = request.headers.get("x-real-ip");
+  if (realIp) return realIp;
+  return undefined;
+}
+
+// --- Rate limiting (in-memory, per-instance) ---
+
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+export function checkRateLimit(
+  key: string,
+  maxRequests: number,
+  windowMs: number,
+): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  entry.count++;
+  return entry.count <= maxRequests;
 }

@@ -17,6 +17,10 @@ model User {
   emailVerifyToken     String?   @unique @map("email_verify_token")
   passwordResetToken   String?   @unique @map("password_reset_token")
   passwordResetExpires DateTime? @map("password_reset_expires")
+  encryptedDek         String?   @map("encrypted_dek")
+  serverEncryptedDek   String?   @map("server_encrypted_dek")
+  dekSalt              String?   @map("dek_salt")
+  dekVersion           Int       @default(0) @map("dek_version")
   lastCheckIn          DateTime? @map("last_check_in")
   checkInIntervalDays  Int?      @map("check_in_interval_days")
   createdAt            DateTime  @default(now()) @map("created_at")
@@ -30,8 +34,24 @@ model User {
   accessTriggers     AccessTrigger[]
   auditLogs          AuditLog[]      @relation("AuditLogOwner")
   auditLogsActed     AuditLog[]      @relation("AuditLogActor")
+  refreshTokens      RefreshToken[]
 
   @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
 
 enum VaultItemType {

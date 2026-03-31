@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { handleError } from "@/lib/auth";
+import { handleError, checkRateLimit } from "@/lib/auth";
+import { sendPasswordResetEmail } from "@/lib/email";
 
 const forgotPasswordSchema = z.object({
   email: z.string().email("Invalid email address"),
@@ -10,6 +11,14 @@ const forgotPasswordSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    if (!checkRateLimit(`auth:${ip}`, 10, 60_000)) {
+      return NextResponse.json(
+        { error: "Too many attempts, please try again later" },
+        { status: 429 },
+      );
+    }
+
     const body = await request.json();
     const { email } = forgotPasswordSchema.parse(body);
 
@@ -25,7 +34,7 @@ export async function POST(request: NextRequest) {
     }
 
     const resetToken = crypto.randomBytes(32).toString("hex");
-    const resetExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    const resetExpiry = new Date(Date.now() + 60 * 60 * 1000);
 
     await prisma.user.update({
       where: { id: user.id },
@@ -35,8 +44,9 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const response: Record<string, unknown> = { message: successMessage };
+    await sendPasswordResetEmail(user.email, resetToken);
 
+    const response: Record<string, unknown> = { message: successMessage };
     if (process.env.NODE_ENV === "development") {
       response.resetToken = resetToken;
     }

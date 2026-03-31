@@ -9,21 +9,56 @@ class ApiError extends Error {
   }
 }
 
+let isRefreshing = false;
+let refreshPromise: Promise<boolean> | null = null;
+
+async function tryRefresh(): Promise<boolean> {
+  if (isRefreshing && refreshPromise) return refreshPromise;
+  isRefreshing = true;
+  refreshPromise = fetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+  })
+    .then((res) => res.ok)
+    .finally(() => {
+      isRefreshing = false;
+      refreshPromise = null;
+    });
+  return refreshPromise;
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const token =
-    typeof window !== "undefined" ? localStorage.getItem("token") : null;
-
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   });
+
+  // If 401, attempt a silent refresh and retry once
+  if (res.status === 401 && !path.startsWith("/auth/")) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      const retryRes = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...options.headers,
+        },
+      });
+      const retryData = await retryRes.json().catch(() => ({}));
+      if (!retryRes.ok) {
+        throw new ApiError(retryRes.status, retryData.error || "Request failed");
+      }
+      return retryData as T;
+    }
+  }
 
   const data = await res.json().catch(() => ({}));
 
@@ -37,16 +72,23 @@ async function request<T>(
 // Auth
 export const auth = {
   login: (email: string, password: string) =>
-    request<{ token: string; user: User }>("/auth/login", {
+    request<{ user: User }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
   register: (email: string, password: string, name?: string) =>
-    request<{ token: string; user: User }>("/auth/register", {
+    request<{ user: User }>("/auth/register", {
       method: "POST",
       body: JSON.stringify({ email, password, name }),
     }),
+  logout: () =>
+    request<{ message: string }>("/auth/logout", { method: "POST" }),
   me: () => request<{ user: User }>("/account/me"),
+  deleteAccount: (password: string) =>
+    request<{ message: string }>("/account/me", {
+      method: "DELETE",
+      body: JSON.stringify({ password }),
+    }),
 };
 
 // Vault items
@@ -105,6 +147,80 @@ export const tags = {
     }),
   delete: (id: string) =>
     request<{ message: string }>(`/vault/tags/${id}`, { method: "DELETE" }),
+};
+
+// Trustees
+export const trustees = {
+  list: () => request<{ trustees: TrusteeRecord[] }>("/trustees"),
+  received: () => request<{ trustees: ReceivedTrustee[] }>("/trustees/received"),
+  inviteInfo: (token: string) =>
+    request<{ invite: InviteInfo }>(`/trustees/invite/${token}`),
+  add: (data: AddTrusteePayload) =>
+    request<{ trustee: TrusteeRecord }>("/trustees", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  accept: (token: string) =>
+    request<{ message: string }>(`/trustees/accept/${token}`, { method: "POST" }),
+  update: (id: string, data: UpdateTrusteePayload) =>
+    request<{ trustee: TrusteeRecord }>(`/trustees/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  revoke: (id: string) =>
+    request<{ message: string }>(`/trustees/${id}`, { method: "DELETE" }),
+  listVault: (id: string) =>
+    request<{ items: VaultItemSummary[] }>(`/trustees/${id}/vault`),
+  viewItem: (trusteeId: string, itemId: string) =>
+    request<{ item: VaultItemDetail }>(`/trustees/${trusteeId}/vault/${itemId}`),
+};
+
+// Access Triggers
+export const triggers = {
+  list: () => request<{ triggers: AccessTrigger[] }>("/triggers"),
+  create: (data: CreateTriggerPayload) =>
+    request<{ trigger: AccessTrigger }>("/triggers", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, data: UpdateTriggerPayload) =>
+    request<{ trigger: AccessTrigger }>(`/triggers/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  cancel: (id: string) =>
+    request<{ message: string }>(`/triggers/${id}`, { method: "DELETE" }),
+  fire: (id: string) =>
+    request<{ message: string; trigger: { status: string; executesAt?: string } }>(
+      `/triggers/${id}/fire`,
+      { method: "POST" },
+    ),
+  override: (id: string) =>
+    request<{ message: string }>(`/triggers/${id}/override`, { method: "POST" }),
+};
+
+// Dead Man Switch
+export const deadManSwitch = {
+  status: () => request<DeadManSwitchStatus>("/dead-man-switch/status"),
+  configure: (checkInIntervalDays: number) =>
+    request<{ message: string; checkInIntervalDays: number; lastCheckIn: string }>(
+      "/dead-man-switch/configure",
+      { method: "POST", body: JSON.stringify({ checkInIntervalDays }) },
+    ),
+  checkIn: () =>
+    request<{ message: string; lastCheckIn: string }>("/dead-man-switch/check-in", {
+      method: "POST",
+    }),
+  disable: () =>
+    request<{ message: string }>("/dead-man-switch/disable", { method: "POST" }),
+};
+
+// Audit Log
+export const auditLog = {
+  list: (params?: { action?: string; page?: number }) => {
+    const qs = params ? "?" + new URLSearchParams(params as Record<string, string>).toString() : "";
+    return request<{ entries: AuditEntry[]; pagination: Pagination }>(`/audit-log${qs}`);
+  },
 };
 
 // Types
@@ -175,79 +291,6 @@ export interface UpdateItemPayload {
   tagIds?: string[];
 }
 
-// Trustees
-export const trustees = {
-  list: () => request<{ trustees: TrusteeRecord[] }>("/trustees"),
-  received: () => request<{ trustees: ReceivedTrustee[] }>("/trustees/received"),
-  add: (data: AddTrusteePayload) =>
-    request<{ trustee: TrusteeRecord }>("/trustees", {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-  accept: (token: string) =>
-    request<{ message: string }>(`/trustees/accept/${token}`, { method: "POST" }),
-  update: (id: string, data: UpdateTrusteePayload) =>
-    request<{ trustee: TrusteeRecord }>(`/trustees/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    }),
-  revoke: (id: string) =>
-    request<{ message: string }>(`/trustees/${id}`, { method: "DELETE" }),
-  listVault: (id: string) =>
-    request<{ items: VaultItemSummary[] }>(`/trustees/${id}/vault`),
-  viewItem: (trusteeId: string, itemId: string) =>
-    request<{ item: VaultItemDetail }>(`/trustees/${trusteeId}/vault/${itemId}`),
-};
-
-// Access Triggers
-export const triggers = {
-  list: () => request<{ triggers: AccessTrigger[] }>("/triggers"),
-  create: (data: CreateTriggerPayload) =>
-    request<{ trigger: AccessTrigger }>("/triggers", {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-  update: (id: string, data: UpdateTriggerPayload) =>
-    request<{ trigger: AccessTrigger }>(`/triggers/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    }),
-  cancel: (id: string) =>
-    request<{ message: string }>(`/triggers/${id}`, { method: "DELETE" }),
-  fire: (id: string) =>
-    request<{ message: string; trigger: { status: string; executesAt?: string } }>(
-      `/triggers/${id}/fire`,
-      { method: "POST" },
-    ),
-  override: (id: string) =>
-    request<{ message: string }>(`/triggers/${id}/override`, { method: "POST" }),
-};
-
-// Dead Man Switch
-export const deadManSwitch = {
-  status: () => request<DeadManSwitchStatus>("/dead-man-switch/status"),
-  configure: (checkInIntervalDays: number) =>
-    request<{ message: string; checkInIntervalDays: number; lastCheckIn: string }>(
-      "/dead-man-switch/configure",
-      { method: "POST", body: JSON.stringify({ checkInIntervalDays }) },
-    ),
-  checkIn: () =>
-    request<{ message: string; lastCheckIn: string }>("/dead-man-switch/check-in", {
-      method: "POST",
-    }),
-  disable: () =>
-    request<{ message: string }>("/dead-man-switch/disable", { method: "POST" }),
-};
-
-// Audit Log
-export const auditLog = {
-  list: (params?: { action?: string; page?: number }) => {
-    const qs = params ? "?" + new URLSearchParams(params as Record<string, string>).toString() : "";
-    return request<{ entries: AuditEntry[]; pagination: Pagination }>(`/audit-log${qs}`);
-  },
-};
-
-// Trustee Types
 export interface TrusteeRecord {
   id: string;
   trustee: { id: string; email: string; name: string | null };
@@ -269,6 +312,15 @@ export interface ReceivedTrustee {
   createdAt: string;
 }
 
+export interface InviteInfo {
+  grantorName: string;
+  role: "TRUSTEE" | "EXECUTOR";
+  accessLevel: { types?: string[] } | null;
+  status: "PENDING" | "ACCEPTED" | "REVOKED";
+  expired: boolean;
+  expiresAt: string | null;
+}
+
 export interface AddTrusteePayload {
   trusteeEmail: string;
   role: "TRUSTEE" | "EXECUTOR";
@@ -282,7 +334,6 @@ export interface UpdateTrusteePayload {
   itemIds?: string[];
 }
 
-// Trigger Types
 export interface AccessTrigger {
   id: string;
   type: "MANUAL" | "DEAD_MAN_SWITCH" | "INACTIVITY";
@@ -315,7 +366,6 @@ export interface DeadManSwitchStatus {
   isOverdue?: boolean;
 }
 
-// Audit Types
 export interface AuditEntry {
   id: string;
   action: string;

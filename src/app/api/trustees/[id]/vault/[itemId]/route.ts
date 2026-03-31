@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireAuth, handleError } from "@/lib/auth";
-import { decrypt } from "@/lib/crypto";
-
-/* ------------------------------------------------------------------ */
-/*  GET /api/trustees/[id]/vault/[itemId]                              */
-/* ------------------------------------------------------------------ */
+import { requireAuth, handleError, getClientIp } from "@/lib/auth";
+import { decrypt, unwrapDekFromServerKek } from "@/lib/crypto";
 
 export async function GET(
   request: NextRequest,
@@ -15,16 +11,9 @@ export async function GET(
     const { userId } = requireAuth(request);
     const { id, itemId } = await params;
 
-    // Find trustee record where user is the trustee and status is ACCEPTED
     const trustee = await prisma.trustee.findFirst({
-      where: {
-        id,
-        trusteeId: userId,
-        status: "ACCEPTED",
-      },
-      include: {
-        itemPermissions: true,
-      },
+      where: { id, trusteeId: userId, status: "ACCEPTED" },
+      include: { itemPermissions: true },
     });
 
     if (!trustee) {
@@ -34,7 +23,6 @@ export async function GET(
       );
     }
 
-    // Must be activated
     if (!trustee.activatedAt) {
       return NextResponse.json(
         { error: "Vault access has not been activated yet" },
@@ -42,25 +30,16 @@ export async function GET(
       );
     }
 
-    // Find the vault item belonging to the grantor
     const item = await prisma.vaultItem.findFirst({
-      where: {
-        id: itemId,
-        userId: trustee.grantorId,
-      },
+      where: { id: itemId, userId: trustee.grantorId },
     });
 
     if (!item) {
-      return NextResponse.json(
-        { error: "Vault item not found" },
-        { status: 404 },
-      );
+      return NextResponse.json({ error: "Vault item not found" }, { status: 404 });
     }
 
-    // Check permission - by specific item list or by type
-    const permittedItemIds = trustee.itemPermissions.map(
-      (ip) => ip.vaultItemId,
-    );
+    // Check permission
+    const permittedItemIds = trustee.itemPermissions.map((ip) => ip.vaultItemId);
 
     if (permittedItemIds.length > 0) {
       if (!permittedItemIds.includes(itemId)) {
@@ -84,7 +63,7 @@ export async function GET(
       }
     }
 
-    // Create audit log for viewing
+    // Audit log with IP
     await prisma.auditLog.create({
       data: {
         ownerId: trustee.grantorId,
@@ -95,11 +74,19 @@ export async function GET(
           vaultItemId: itemId,
           vaultItemTitle: item.title,
         },
+        ipAddress: getClientIp(request),
       },
     });
 
-    // Decrypt and return item
-    const decryptedData = JSON.parse(decrypt(item.encryptedData));
+    // Use vault owner's per-user DEK if available
+    const owner = await prisma.user.findUnique({
+      where: { id: trustee.grantorId },
+      select: { serverEncryptedDek: true },
+    });
+    const ownerDek = owner?.serverEncryptedDek
+      ? unwrapDekFromServerKek(owner.serverEncryptedDek)
+      : undefined;
+    const decryptedData = JSON.parse(decrypt(item.encryptedData, ownerDek));
 
     return NextResponse.json({
       item: {
